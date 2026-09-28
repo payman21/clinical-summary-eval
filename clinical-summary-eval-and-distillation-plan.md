@@ -8,37 +8,80 @@ Data on hand: `data/physionet.org/files/mimic-iv-note/2.2/note/discharge.csv.gz`
 
 **Extensions:** two independent additions below the core plan, neither of which modifies it — Extension A trains a second model on a different corpus and compares it against the core plan's models; Extension B adds a second, parallel evaluation set alongside your own hand-labeled one. Both are optional and can be dropped without touching Stages 0–4.
 
+## Status (2026-09-28)
+
+| Stage | Status |
+|---|---|
+| 0 — Task spec | **Done.** [docs/task_spec.md](docs/task_spec.md) frozen at v1.0. |
+| 1 — Eval harness | **In progress.** Pilot (30 notes) sampled and labeled by the clinician. Next: fresh validation set, Bedrock setup, key-fact extractor and presence judge. |
+| 2 — System A | Eval set (500 notes) sampled and frozen; not yet run. |
+| 3 — System B | Not started. |
+| 4 — Comparison | Not started. |
+
+Details of every decision are in [docs/decision_log.md](docs/decision_log.md); the paper-ready version is [docs/methods.md](docs/methods.md).
+
+**Key changes from the original plan:**
+- **Scope:** full discharge summary, not the Brief Hospital Course only.
+- **Reference standard:** exhaustive must-retain lists were replaced by clinician-defined **"actionable delta" key facts**, following MedFactEval (Grolleau et al., 2025).
+- **Key facts on the eval set:** extracted by a validated LLM extractor, not hand-labeled.
+- **Eval set:** 500 notes rather than 100–150, with the final analysis n set by a power calculation.
+
 ---
 
-## Stage 0 — Scope the task (before writing any code)
+## Stage 0 — Scope the task ✅ (frozen v1.0)
 
-- **Document type:** one discharge summary section, or the full note — decide based on length. A full MIMIC discharge summary can be very long; consider starting with the **"Brief Hospital Course"** section only, since it's the part most analogous to what a real summarization product outputs.
-- **Summary spec (write this down, freeze it):**
-  - Must retain: final diagnoses, medications at discharge, follow-up instructions, major procedures, abnormal findings that drove decisions.
-  - May omit: routine normal labs, administrative boilerplate.
-  - How to represent uncertainty/negation ("no evidence of X") and chronology (order of events) — decide explicitly, this is where models fail most.
-- **Primary endpoint — omission, not hallucination.** Freeze this before any comparison. The primary metric is the **per-note omission rate**: the proportion of must-retain findings (per the spec above) that the summary fails to include. Hallucination (unsupported additions) is a **secondary** endpoint.
+Settled, see [docs/task_spec.md](docs/task_spec.md):
+- **Reader:** the patient's primary care physician (PCP) after discharge. The summary conveys what is **new or changed and actionable** because of this admission.
+- **Input:** the full discharge summary.
+- **Output:** fixed headings (Diagnoses / Hospital course / Med changes / Pending), ≤250 words, with the complete medication delta. The limit was validated on the 5 densest pilot notes (all ≤216 words).
+- **Reference standard, "key facts":**
+  - always the principal diagnosis (reason for *this* admission, with its suspected cause);
+  - every medication change, determined mechanically from the admission vs. discharge lists;
+  - every other candidate that passes a four-question test: new or changed? matters after discharge? for a clinician? distinct?
+  - fixed defaults when the note is silent;
+  - no cap on the number of facts.
+- **Severity:** major/minor. Medications are graded mechanically: major if and only if on the ISMP 2021 community/ambulatory high-alert list, plus oral antiplatelets and class I/III antiarrhythmics.
+- **Primary endpoint — omission, not hallucination.** The primary metric is the **per-note key-fact omission rate**: omitted key facts ÷ key facts in the note, averaged across notes. Secondary endpoints:
+  - hallucination (unsupported statements), with a strict definition that counts unstated inferences
+  - omission rate by fact type
+  - ≥1 major omission
+  - contradiction of a key fact
   - *Why this ordering:* Park, Chen & Dettmers, "Synthetic Hospital" (arXiv:2609.30027, Sept 2026), Appendix Table A, evaluated 10 frontier and open models on clinical summarization and found hallucination rates of **0.001–0.009 across every model and prompting strategy**, while omission ran **0.45–0.62** for whole-patient summaries (0.47–0.79 on the harder specialty-conditioned variant). Their conclusion: "modern frontier models rarely fabricate unsupported clinical findings. Instead, the dominant failure mode is omission."
   - *Consequence:* an endpoint built around unsupported additions risks a floor effect with almost nothing left to measure. Omission is where the signal is.
   - *Caveat worth testing:* that prior comes from education-derived synthetic records, not messy real notes. Whether near-zero hallucination replicates on MIMIC discharge summaries is itself a reportable secondary result.
 
-**Output of this stage:** a one-paragraph task spec you can paste at the top of every later document.
+**Lessons from Stage 0** (recorded in the decision log):
+- **An exhaustive must-retain list was too subjective and too slow for one rater.** The first pilot note produced 28 items and 5 open questions. Actionable-delta key facts fixed this.
+- **Consistency matters more than per-note accuracy.** Both systems are scored against the same reference, so systematic error largely cancels while inconsistency adds variance. The spec is therefore written as general tests and mechanical procedures, not lists of examples.
+- **MIMIC-specific findings:**
+  - Follow-up Instructions are fully redacted.
+  - 12% of notes lose the Brief Hospital Course header to de-identification.
+  - Notes map one-to-one to admissions.
 
 ---
 
-## Stage 1 — Lightweight eval harness (pilot scale)
+## Stage 1 — Eval harness (pilot scale)
 
 Goal: enough infrastructure to measure quality, not the full production version.
 
-1. **Sample ~30 discharge summaries** from `discharge.csv.gz`, stratified a little (e.g., mix of short/long, medical/surgical if `admissions.csv.gz` diagnosis codes are easy to join in).
-2. **Generate one summary per note** with a single baseline prompt (see Stage 2).
-3. **Build the error taxonomy** from what you actually see in these 30, not from theory. Likely categories: material omission, unsupported addition, negation error, temporal error, wrong attribution. Define severity (major/minor) with 2–3 concrete examples per category, pulled from your own pilot outputs. Expect omission to dominate (see the Stage 0 endpoint note) and budget labeling effort accordingly: enumerate the must-retain findings for each note up front, so omission is scored against an explicit list rather than judged holistically.
-4. **Hand-label the 30 pilot cases yourself** against the source note using the taxonomy.
-5. **Draft an LLM-judge prompt** that takes (source note, generated summary) and returns taxonomy-coded errors + severity.
-6. **Validate the judge** against your 30 hand labels: report false negatives on major errors (the dangerous failure mode), false positives, and agreement by category.
-7. If judge agreement is weak, iterate the judge prompt (few-shot examples from your labeled cases usually helps most) before scaling up.
+1. ✅ **Sample pilot and eval sets:**
+   - patient-level split (pilot / eval / train);
+   - 30 pilot notes, equal allocation across 12 length × service strata;
+   - 500 eval notes, proportional allocation; representativeness checked with SMDs.
+2. ✅ **Clinician labels key facts on the 30 pilot notes**, blind to LLM suggestions. Result: 280 facts, median 8.5 per note (range 1–19), 56% medication changes. The pilot is split into **tune** and **test** halves of 15 each.
+3. ✅ **Freeze the spec** after checking the four-question test against 10 tune notes (the spec agreed with 92% of calls after label fixes) and validating the word limit.
+4. **Fresh validation set:** 8–10 new pilot-pool notes, labeled after the freeze and never used to write rules. Because the spec's rules were shaped partly by test-half notes, this is the primary generalization check.
+5. **Bedrock setup:** Claude for System A, plus at least one non-Claude model family for extraction and judging (to avoid favoring the teacher's model family).
+6. **Key-fact extractor:**
+   - LLM transcription of the medication lists, then comparison in code;
+   - LLM extraction of the other key facts via the four-question test, with `uncertain` flags when a silence default is applied.
 
-**Output of this stage:** a taxonomy, ~30 labeled cases, and a judge you've measured (not assumed) to be reasonably reliable.
+   Tune it on the tune half. Report recall and precision against the clinician's facts on the test half and the fresh set, plus stability across runs.
+7. **Generate System A summaries** for the pilot notes.
+8. **Clinician presence labels:** for each summary, mark each key fact present or absent. That's ~300 yes/no judgments: all test notes plus ~5 tune notes.
+9. **Presence judge**, a mixed-family LLM jury in the style of MedFactEval: tune on the tune half, then report Cohen's κ against the clinician on the test half with bootstrap CIs. Include the contradiction check and the hallucination judge.
+
+**Output of this stage:** a frozen spec, 30 (+10 fresh) clinician-labeled notes, and an extractor and judge whose agreement with the clinician is measured, not assumed.
 
 **Stopping point if short on time:** this stage alone is already a defensible portfolio artifact — "I built and validated an LLM-as-judge for clinical summary faithfulness" — even without Stages 2–4.
 
@@ -46,9 +89,11 @@ Goal: enough infrastructure to measure quality, not the full production version.
 
 ## Stage 2 — Baseline: closed-API summarizer
 
-1. Call Claude or GPT API with the frozen prompt from Stage 0 on a larger sample (e.g., 100–150 notes).
-2. Score all outputs with the Stage 1 judge.
-3. Report: per-note omission rate (primary), hallucination rate (secondary), latency, and cost per summary. This is your reference point — call it **System A**.
+1. **Extract key facts once** for all eval notes with the frozen Stage 1 extractor, and store them. Every system is scored against these identical facts.
+2. **Fix the analysis size:** run the power calculation using σ_d from the pilot, before any System A vs. B results exist. If fewer than 500 notes suffice, use a stratified subsample.
+3. **Summarize the eval notes** with Claude via AWS Bedrock (the only route MIMIC text may leave the machine), using the frozen prompt. The format example comes from a tune note.
+4. Score all outputs with the Stage 1 judge.
+5. Report: per-note key-fact omission rate (primary), secondary endpoints, latency, and cost per summary. This is your reference point — call it **System A**.
 
 **Output of this stage:** a numeric baseline (error rate + cost/latency) that Stage 4 has to beat or match.
 
@@ -57,7 +102,7 @@ Goal: enough infrastructure to measure quality, not the full production version.
 ## Stage 3 — Fine-tune / distill an open-source model
 
 1. **Pick a small open model** you can run locally or on modest cloud GPU — e.g., a 7–8B instruction-tuned model (Llama, Qwen, Mistral class). Use LoRA/QLoRA, not full fine-tuning.
-2. **Build training data via distillation**: take a separate set of MIMIC notes (disjoint from your eval set — no overlap, this matters), generate target summaries with the closed API (System A's prompt), and use those (note, summary) pairs as supervised fine-tuning targets for the open model. This sidesteps needing hand-written gold summaries at scale.
+2. **Build training data via distillation**: take notes from the **train** patient partition (disjoint by patient from pilot and eval, so no evaluation patient is ever seen in training, even through another admission). Generate target summaries with System A's prompt via Bedrock, and use the (note, summary) pairs as supervised fine-tuning targets. This avoids needing hand-written gold summaries at scale. *Before starting:* check the Bedrock model's terms on using outputs to train other models. Also, the longest eligible notes are ~6–7k tokens, so the student needs ≥8k context.
 3. Fine-tune the open model on this distilled data.
 4. Run the fine-tuned model on the **same held-out eval set** used in Stage 2 (never seen during training) — call it **System B**.
 5. Score System B with the same judge from Stage 1.
@@ -72,7 +117,7 @@ Goal: enough infrastructure to measure quality, not the full production version.
 
 ## Stage 4 — Compare and decide
 
-1. **Paired comparison**: System A and System B scored on the identical set of notes. Compute the per-note difference in omission rate (the primary endpoint frozen in Stage 0).
+1. **Paired comparison**: System A and System B scored on the identical set of notes, against the identical stored key facts. Compute the per-note difference in key-fact omission rate (the primary endpoint frozen in Stage 0). Also report the difference by fact type.
 2. **Statistical test**: because the primary endpoint is a continuous per-note rate rather than a binary flag, use a **paired bootstrap confidence interval** on the mean difference, or a Wilcoxon signed-rank test. Reserve McNemar's for the secondary binary endpoints ("≥1 major omission", "≥1 unsupported addition"). Do not dichotomize the primary endpoint — it discards power for no benefit. If a note contributes to more than one grouped unit (shouldn't happen here since one summary per note, but check), account for that grouping.
 3. **Report together**: quality difference (with CI) + cost/latency difference. The actual finding you're chasing: *"System B matches System A's faithfulness within [X]% at [Y]x lower cost/latency"* — or the honest negative result if it doesn't.
 4. If System B loses badly, that's still a valid, reportable result — investigate on your distillation training data (not the frozen eval set) rather than re-tuning against the eval set itself.
@@ -127,7 +172,7 @@ Goal: enough infrastructure to measure quality, not the full production version.
 1. **Judge validity may not transfer across registers.** A judge validated on Synthetic Hospital's clean, education-derived prose is not automatically valid on MIMIC's telegraphic, abbreviation-heavy discharge notes — the paper itself notes physicians could still tell the two registers apart in its format-normalized realism study. Validate on Synthetic Hospital, then re-check agreement on your small MIMIC hand-labeled set; a drop is a finding, not a failure to hide.
 2. **The construct isn't identical.** Synthetic Hospital's "key findings" are derived from board-question vignettes built to be diagnostically clean; what matters for real clinical continuity of care isn't guaranteed to be the same list. Report agreement, don't assume equivalence.
 
-**Keep MIMIC as the headline.** Do not let Synthetic Hospital become the primary evaluation set — the paper already benchmarked ten frontier models on it two days before you read it, so "I ran the same benchmark" carries no signal on its own. Its value here is entirely as a validation aid for the judge you built for MIMIC.
+**Keep MIMIC as the headline.** Do not let Synthetic Hospital become the primary evaluation set — the paper already benchmarked ten frontier models on it, so "I ran the same benchmark" carries no signal on its own. Its value here is entirely as a validation aid for the judge you built for MIMIC.
 
 **Done when.** Judge agreement (false-negative/false-positive rate on omission) reported on both eval sets side by side, with an explicit statement of whether they agree.
 
@@ -138,8 +183,8 @@ Goal: enough infrastructure to measure quality, not the full production version.
 ## What "done" looks like
 
 **Core plan:**
-- A frozen task spec and taxonomy.
-- A judge, validated against your own hand labels, with reported false-negative/false-positive rates.
+- A frozen task spec ✅ and clinician-labeled key facts on the pilot ✅ plus a fresh validation set.
+- A key-fact extractor and a presence judge, each validated against your own labels (recall/precision, κ with CIs).
 - Two systems (closed-API baseline, fine-tuned open model) scored on the same frozen MIMIC held-out set.
 - A statistically grounded comparison (paired test, CI) covering both quality and cost/latency.
 - A short write-up: question, data, method, result, limitations — the same structure as the BrainLM paper.
@@ -152,8 +197,10 @@ Goal: enough infrastructure to measure quality, not the full production version.
 
 **Core plan:**
 - Compute budget and access for LoRA fine-tuning (local GPU vs. cloud — decide before Stage 3).
-- Whether "Brief Hospital Course" alone or the full discharge summary is the right scope — a quick look at 5–10 real notes will settle this.
-- How large the final eval set needs to be to detect a meaningful effect size with reasonable confidence — worth a quick power calculation once Stage 1's pilot gives you a rough sense of baseline omission rate and variance.
+- ~~Whether "Brief Hospital Course" alone or the full discharge summary is the right scope.~~ **Resolved:** full discharge summary.
+- How large the final eval set needs to be. **Partly resolved:** 500 notes are drawn and frozen. The final n comes from a power calculation with the pilot's σ_d and a pre-registered equivalence margin δ, before any A vs. B results.
+- Which non-Claude model families are enabled on Bedrock for the extractor and judge jury.
+- Whether a second clinician can double-label key-fact presence on 10–15 notes, to give a human–human κ ceiling. Otherwise, report the single rater as a limitation.
 
 **Extensions:**
 - Extension A: how much work it actually is to render Synthetic Hospital records into your single-note task format — inspect a few released patients before committing.

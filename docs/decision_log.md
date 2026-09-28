@@ -161,3 +161,7 @@ Lists of examples are demoted to illustrations. The homemade high-risk medicatio
 **Word limit validated:** the GP wrote reference summaries for the 5 pilot notes with the most key facts (15–19; 19 is the pilot maximum; up to 13 medication changes) and checked every key fact for coverage. All fit in ≤216 words, so the 250-word limit stands. The original "≥90% of notes" criterion was replaced by this worst-case check: if the densest notes fit, lighter notes fit too.
 **Freeze:** `docs/task_spec.md` is v1.0. Any later change needs a new version number and an entry here, and must not be informed by System A vs. B results.
 **Next:** draw the fresh post-freeze validation set (8–10 notes), then set up Bedrock and build the extractor and judge.
+
+## 2026-09-28 — Final pilot label statistics (post-freeze)
+After the GP's corrections, rule changes, and mechanical severity: **280 key facts** (down from 464 at first completion), median 8.5 per note (IQR 6–13, range 1–19). By type: medication_change 156 (56%; 38 major / 118 minor), follow_up 51, principal_diagnosis 30, diagnosis 26, management_change 17. Overall 148 major / 132 minor. All 30 notes have `status: done` and a labeler. The drop from 464 facts mostly reflects the four-question test and the exclusion rules removing non-actionable candidates.
+The project plan and methods draft were updated to reflect Stages 0–1 as actually done.

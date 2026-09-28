@@ -2,7 +2,11 @@
 
 Does a LoRA-distilled open-source model match a closed-API model's discharge-summary faithfulness (primary endpoint: per-note omission rate) at a fraction of the cost?
 
-See [the project plan](clinical-summary-eval-and-distillation-plan.md) and [the task spec](docs/task_spec.md).
+- [Project plan](clinical-summary-eval-and-distillation-plan.md): stages, current status
+- [Task spec v1.0 (frozen)](docs/task_spec.md): summary format, key-fact reference standard, endpoints
+- [Methods draft](docs/methods.md): paper-ready methods and limitations
+- [Decision log](docs/decision_log.md): dated decisions, rationale, dead ends
+- [Reference summary guide](docs/reference_summary_guide.md): how word-limit reference summaries are written
 
 ## Layout
 

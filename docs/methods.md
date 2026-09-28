@@ -28,7 +28,7 @@ To prevent information leakage between evaluation and model training, every pati
 
 | Partition | Share of patients | Patients | Purpose |
 |---|---:|---:|---|
-| Pilot | 5% | 7,296 | Error-taxonomy development, hand labeling, LLM-judge validation |
+| Pilot | 5% | 7,296 | Reference-standard development, clinician labeling, extractor and judge validation |
 | Evaluation | 15% | 21,887 | Frozen held-out comparison of System A vs. System B |
 | Training | 80% | 116,731 | Distillation training data (Stage 3) |
 
@@ -45,7 +45,7 @@ Together these define 12 strata (4 length quartiles × 3 service groups). The el
 
 The two sampled sets serve different purposes and were allocated differently:
 
-- **Pilot set (n = 30), equal allocation.** 2–3 notes per stratum, deliberately over-representing less common strata so that the error taxonomy and judge are developed on the full range of note types.
+- **Pilot set (n = 30), equal allocation.** 2–3 notes per stratum, deliberately over-representing less common strata so that the reference standard, extractor, and judge are developed on the full range of note types.
 - **Evaluation set (n = 500), proportional allocation.** Stratum sample sizes are proportional to each stratum's share of the eligible population (largest-remainder rounding), so the evaluation set is representative of the eligible population.
 
 Within strata, notes (not patients) were sampled uniformly at random, skipping any note whose patient had already been selected. Sampling notes rather than patients keeps the sets representative at the note level: patients with multiple admissions contribute in proportion to their share of notes. <!-- Allocation order: strata with the smallest allocation are filled first. -->
@@ -73,7 +73,7 @@ All evaluation-set SMDs were below 0.1 in absolute value. The pilot set departs 
 
 ## Evaluation set size
 
-The primary claim is one of equivalence (System B's per-note omission rate is within a margin δ of System A's), which requires a confidence interval on the paired mean difference narrow enough to exclude ±δ. Under a paired design, n ≈ (z₁₋α + z₁₋β/₂)² σ_d² / δ². With placeholder values σ_d = 0.15 (SD of the per-note difference in omission rate), δ = 0.03, α = 0.05, and power 0.80, this gives n ≈ 210. We drew and froze 500 notes. The final analysis size will be fixed by a power calculation using σ_d estimated from the pilot, **before** any System A vs. System B results are examined. If fewer notes suffice, a stratified subsample of the frozen set will be used.
+The primary claim is one of equivalence (System B's per-note key-fact omission rate is within a margin δ of System A's), which requires a confidence interval on the paired mean difference narrow enough to exclude ±δ. Under a paired design, n ≈ (z₁₋α + z₁₋β/₂)² σ_d² / δ². With placeholder values σ_d = 0.15 (SD of the per-note difference in omission rate), δ = 0.03, α = 0.05, and power 0.80, this gives n ≈ 210. We drew and froze 500 notes. The final analysis size will be fixed by a power calculation using σ_d estimated from the pilot, **before** any System A vs. System B results are examined. If fewer notes suffice, a stratified subsample of the frozen set will be used.
 
 <!-- TODO: replace placeholder σ_d and δ with pilot estimates and the pre-registered margin. -->
 
@@ -81,12 +81,74 @@ The primary claim is one of equivalence (System B's per-note omission rate is wi
 
 Notes were segmented into sections by matching the 18 top-level headers of the MIMIC-IV discharge summary template (e.g., Chief Complaint, History of Present Illness, Brief Hospital Course, Discharge Medications, Discharge Diagnosis, Discharge Instructions, Followup Instructions) at the start of a line. Sub-headings within sections (e.g., "Transitional Issues") were not split on.
 
-In the pilot set, the Brief Hospital Course had a median length of ~1,900 characters (range 521–8,564), ~22% of the note. Together with the discharge medications, diagnosis, and instructions sections, it made up ~45% of the note.
+In the pilot set, the Brief Hospital Course had a median length of ~1,900 characters (range 521–8,564), ~22% of the note. Together with the discharge medications, diagnosis, and instructions sections, it made up ~45% of the note. Because several reference categories (discharge medications, discharge diagnoses) sit outside the Brief Hospital Course, the **full discharge summary** is the model input. Segmentation is used to locate the medication lists and the discharge diagnosis list.
 
-<!-- TODO: input scope (BHC only vs. BHC + discharge sections) — pending pilot review. -->
+## Task definition
+
+The target output is a handoff summary for the patient's primary care physician (PCP) after discharge. The PCP is assumed to know the patient's history. The summary conveys what is new or changed and actionable as a result of the admission. Summaries use four fixed headings (Diagnoses, Hospital course, Med changes, Pending), are limited to 250 words, and must list the complete medication delta.
+
+The full specification is frozen as v1.0 in `docs/task_spec.md`. It was frozen after pilot labeling and before any system was run.
+
+## Reference standard: actionable-delta key facts
+
+Summaries are scored against a per-note list of **key facts**, following MedFactEval (Grolleau et al., 2025), where clinicians define high-salience facts and inclusion is judged against them. We depart from MedFactEval in two ways: we use no fixed number of facts per note, and we define facts by an explicit, reproducible procedure rather than free clinician selection.
+
+1. **Principal diagnosis:** exactly one per note. It is the problem that required admission according to the hospital course, written as presenting problem plus (suspected) cause, and it keeps the note's hedging.
+2. **Medication changes, determined mechanically:**
+   - The admission and discharge medication lists are taken at face value.
+   - One fact per drug that was started, stopped (including held), or changed in dose, frequency, or route/formulation.
+   - Changes stated in the text that still apply at discharge are added. Inpatient-only drugs are excluded.
+   - Contradictions are recorded as a reconciliation fact, not silently resolved.
+3. **All other candidates** (diagnoses, findings, treatments, procedures, devices, plans, restrictions) are included only if they pass four questions: (Q1) new or changed during this admission; (Q2) still relevant after discharge; (Q3) directed at a clinician rather than patient self-care; (Q4) not already covered by another fact.
+   - Where the note is silent, fixed defaults apply. For example: a condition is new unless the note marks it pre-existing; a hedged diagnosis without a plan fails Q2 even if listed at discharge; a device not mentioned at discharge is treated as removed unless a discharge treatment requires it.
+
+**Types:** each fact is typed as principal diagnosis, diagnosis, medication change, management change, or follow-up.
+
+**Severity:** each fact is tagged major or minor. Medication changes are graded mechanically: major if and only if the drug is on the ISMP *List of High-Alert Medications in Community/Ambulatory Care Settings* (2021), plus two project additions (oral antiplatelets; class I/III antiarrhythmics). Other facts are major if missing or misstating them would plausibly change the PCP's management or patient safety.
+
+**Design rationale.** Both systems are scored against the same key facts. Systematic error in the reference therefore largely cancels in the paired comparison, while inconsistency adds variance. The specification was accordingly written as general tests and mechanical procedures rather than lists of examples, prioritizing reproducibility over per-note clinical nuance.
+
+## Pilot labeling and specification development
+
+A general practitioner labeled key facts for all 30 pilot notes, blind to any LLM output. The pilot was split once into tune and test halves of 15 notes each, stratified by stratum and seeded. One note whose key facts had been discussed with an LLM before labeling was assigned to the tune half.
+
+The specification was developed iteratively during labeling:
+- An initial exhaustive must-retain list (28 items for the first note) proved too subjective. It was replaced by the actionable-delta definition.
+- Questions the labeler raised while labeling (n = 107) were grouped into five themes and settled as general rules.
+- The four-question procedure was then checked against 10 tune notes (48 included facts, 30 deliberately excluded candidates). It agreed with the labeler's original decision in 67/78 cases (86%). Of the 11 disagreements, 5 were labeling errors (after correction, agreement was 72/78, 92%), 2 prompted rewording, and 4 were resolved by adding silence defaults.
+
+**Final pilot labels:** 280 key facts, median 8.5 per note (IQR 6–13, range 1–19).
+
+| Type | Facts | Share | Major / minor |
+|---|---:|---:|---:|
+| Medication change | 156 | 56% | 38 / 118 |
+| Follow-up | 51 | 18% | 44 / 7 |
+| Principal diagnosis | 30 | 11% | 30 / 0 |
+| Diagnosis | 26 | 9% | 20 / 6 |
+| Management change | 17 | 6% | 16 / 1 |
+
+**Word limit.** The labeler wrote reference summaries for the five pilot notes with the most key facts (15–19 facts, up to 13 medication changes) and verified that every key fact was covered. All fit in ≤216 words, supporting the 250-word limit.
+
+## Planned: automated key-fact extraction and scoring
+
+<!-- Stage 1, not yet run. -->
+Key facts for the evaluation set are produced by a frozen LLM extractor, once per note, and stored, so every system is scored against identical facts.
+
+- **Extractor:** medication changes are computed by LLM transcription of both lists followed by a deterministic comparison in code. Other facts are extracted by applying the four-question procedure. Candidates decided by a silence default are flagged, and the flag rate is reported as a measure of specification coverage.
+- **Presence judge:** a mixed-family LLM jury decides whether each key fact is present in a summary, with a parallel contradiction check.
+- **Model families:** to limit self-preference bias, extraction and judging do not rely solely on the model family used for System A and as the distillation teacher.
+- **Validation:** prompts are iterated on the tune half only.
+  - Extractor: recall and precision against the clinician's facts.
+  - Judge: Cohen's κ against clinician presence judgments, with bootstrap 95% CIs.
+  - Both are reported on the test half and on a fresh set of 8–10 notes labeled after the specification was frozen and never used to write rules.
 
 ## Limitations noted so far
 
 - **Follow-up instructions are unavailable.** The Followup Instructions section is fully redacted in MIMIC-IV-Note (it contained only `___` in all 500 evaluation notes). Follow-up content can be evaluated only where it appears elsewhere in the note (e.g., "Transitional Issues" in the hospital course, or Discharge Instructions).
 - **Header-based exclusion.** 12% of notes were excluded because de-identification removed the Brief Hospital Course header. These excluded notes skew toward medical services (~82% medical, vs. 62% in the eligible population), so medical notes are somewhat under-represented relative to all MIMIC discharge summaries. <!-- TODO: formally compare excluded vs. included notes on Table 1 covariates. -->
 - **Results do not cover in-hospital deaths**, which were excluded by design.
+- **Single rater.** Pilot key facts were labeled by one general practitioner. No inter-rater reliability is available unless a second clinician double-labels a subset.
+- **Specification exposure to the test half.** Specification rules were written after labeling all 30 pilot notes, test half included, so test-half agreement may be optimistic. The fresh post-freeze set is the primary generalization measure.
+- **Small validation sets.** With 15 test and 8–10 fresh notes, agreement estimates will have wide confidence intervals.
+- **Mechanical severity for medications.** Some clinically risky drugs not on the high-alert definition (e.g. lithium) are graded minor. This affects only the "≥1 major omission" secondary endpoint.
+- **Automated reference on the evaluation set.** Unlike MedFactEval, evaluation-set key facts are LLM-extracted rather than clinician-defined. Their validity rests on the extractor's measured agreement with the clinician.
