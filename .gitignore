@@ -1,0 +1,33 @@
+# --- MIMIC / PhysioNet credentialed data: NEVER commit (DUA) ---
+# Raw downloads and anything derived from them (samples, parquet, summaries, labels).
+data/
+outputs/
+*.csv.gz
+*.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Notebooks (outputs are also stripped by nbstripout; see README)
+.ipynb_checkpoints/
+
+# Secrets / local config
+.env
+*.local.yaml
+
+# Model weights / training artifacts
+checkpoints/
+*.safetensors
+*.bin
+wandb/
+
+# OS / editor / tooling
+.claude/
+.DS_Store
+.vscode/
+.idea/

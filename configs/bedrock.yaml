@@ -1,0 +1,7 @@
+# AWS Bedrock settings for System A (closed-API baseline) and the LLM judge.
+# Credentials come from the standard AWS chain (env vars / ~/.aws), never from this file.
+region: us-east-1
+summarizer_model_id: TODO  # fill in once model access is confirmed in the Bedrock console
+judge_model_id: TODO
+max_tokens: 2048
+temperature: 0.0
