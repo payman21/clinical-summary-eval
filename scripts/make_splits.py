@@ -119,7 +119,14 @@ def apply_eligibility(df: pd.DataFrame) -> tuple[pd.DataFrame, list[dict]]:
 
 
 def allocate(cell_sizes: pd.Series, n: int, weights: pd.Series, rng) -> pd.Series:
-    """Largest-remainder allocation of n across cells, capped at available candidates."""
+    """Allocation used for the frozen pilot and eval sets (kept unchanged for reproducibility).
+
+    Known quirk: after the first floor pass, leftover units are redistributed by recomputing
+    shares over the leftover count rather than by the largest fractional remainders, which
+    slightly favors large cells. For the eval set (n=500) this moved 3 notes between strata
+    (at most 1 per stratum); for equal allocation (pilot) it has no effect. New draws should
+    use allocate_largest_remainder().
+    """
     weights = weights.reindex(cell_sizes.index).fillna(0)
     alloc = pd.Series(0, index=cell_sizes.index)
     remaining = n
@@ -143,7 +150,28 @@ def allocate(cell_sizes: pd.Series, n: int, weights: pd.Series, rng) -> pd.Serie
     return alloc
 
 
-def stratified_sample(candidates: pd.DataFrame, n: int, weights: pd.Series, rng) -> pd.DataFrame:
+def allocate_largest_remainder(cell_sizes: pd.Series, n: int, weights: pd.Series, rng) -> pd.Series:
+    """Textbook largest-remainder (Hamilton) allocation of n across cells, capped at available
+    candidates. Ties are broken at random. Capped surplus is re-allocated among open cells."""
+    weights = weights.reindex(cell_sizes.index).fillna(0).astype(float)
+    alloc = pd.Series(0, index=cell_sizes.index)
+    while (remaining := n - int(alloc.sum())) > 0:
+        open_cells = alloc < cell_sizes
+        if not open_cells.any():
+            raise ValueError("Not enough candidates to allocate the requested sample size.")
+        w = weights.where(open_cells, 0)
+        if w.sum() == 0:
+            w = open_cells.astype(float)
+        exact = remaining * w / w.sum()
+        base = np.floor(exact).astype(int)
+        frac = (exact - base + rng.random(len(exact)) * 1e-9).where(open_cells, -1)
+        base[frac.sort_values(ascending=False).index[: remaining - int(base.sum())]] += 1
+        alloc += base.clip(upper=cell_sizes - alloc)
+    return alloc
+
+
+def stratified_sample(candidates: pd.DataFrame, n: int, weights: pd.Series, rng,
+                      allocator=allocate) -> pd.DataFrame:
     """Sample notes (not patients) per cell, skipping notes whose patient is already used.
 
     Drawing notes rather than patients keeps the sample representative of the note-level
@@ -151,7 +179,7 @@ def stratified_sample(candidates: pd.DataFrame, n: int, weights: pd.Series, rng)
     skip rule still guarantees at most one note per patient.
     """
     cell_sizes = candidates.groupby("cell")["subject_id"].nunique()
-    alloc = allocate(cell_sizes, n, weights, rng)
+    alloc = allocator(cell_sizes, n, weights, rng)
     shuffled = candidates.sample(frac=1, random_state=rng)
     used_subjects: set = set()
     picked = []
@@ -211,12 +239,19 @@ def main():
     parser.add_argument("--n-pilot", type=int, default=30)
     parser.add_argument("--n-eval", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--force", action="store_true",
+                        help="overwrite existing pilot/eval sets (they are frozen artifacts)")
     args = parser.parse_args()
+    if (DERIVED_DIR / "eval_set.csv").exists() and not args.force:
+        raise SystemExit("Pilot/eval sets already exist and are frozen; the saved files are the source "
+                         "of truth (see docs/decision_log.md). Use --force only to deliberately redraw.")
     rng = np.random.default_rng(args.seed)
     DERIVED_DIR.mkdir(parents=True, exist_ok=True)
 
     print("Loading note features (reads discharge.csv.gz; takes a minute or two)...")
-    notes = load_note_features()
+    # DuckDB reads the CSV in parallel and returns rows in nondeterministic order; sort so the
+    # seeded sampling is reproducible.
+    notes = load_note_features().sort_values("note_id", ignore_index=True)
     notes["service_group"] = notes["service"].map(service_group)
 
     patient_split = assign_patient_splits(notes["subject_id"].to_numpy(), rng)

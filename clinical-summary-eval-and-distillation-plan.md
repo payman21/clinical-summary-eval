@@ -70,7 +70,7 @@ Goal: enough infrastructure to measure quality, not the full production version.
    - 500 eval notes, proportional allocation; representativeness checked with SMDs.
 2. ✅ **Clinician labels key facts on the 30 pilot notes**, blind to LLM suggestions. Result: 280 facts, median 8.5 per note (range 1–19), 56% medication changes. The pilot is split into **tune** and **test** halves of 15 each.
 3. ✅ **Freeze the spec** after checking the four-question test against 10 tune notes (the spec agreed with 92% of calls after label fixes) and validating the word limit.
-4. **Fresh validation set:** 8–10 new pilot-pool notes, labeled after the freeze and never used to write rules. Because the spec's rules were shaped partly by test-half notes, this is the primary generalization check.
+4. ◐ **Fresh validation set:** 10 notes drawn (pilot partition, excluding pilot patients, proportional allocation, seed 2026). They await clinician labeling under the frozen spec and are never used to write rules. Because the spec's rules were shaped partly by test-half notes, this is the primary generalization check.
 5. **Bedrock setup:** Claude for System A, plus at least one non-Claude model family for extraction and judging (to avoid favoring the teacher's model family).
 6. **Key-fact extractor:**
    - LLM transcription of the medication lists, then comparison in code;

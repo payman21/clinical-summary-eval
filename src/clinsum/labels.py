@@ -14,6 +14,8 @@ from clinsum.paths import DERIVED_DIR, OUTPUTS_DIR
 
 PILOT_LABELS_DIR = OUTPUTS_DIR / "labels" / "pilot"
 PILOT_FOLDS = DERIVED_DIR / "pilot_folds.csv"
+# Fresh post-freeze validation set: labeled under the frozen spec, never used to change rules.
+FRESH_LABELS_DIR = OUTPUTS_DIR / "labels" / "fresh"
 
 FACT_TYPES = ("principal_diagnosis", "diagnosis", "medication_change", "management_change", "follow_up")
 SEVERITIES = ("major", "minor")
@@ -166,7 +168,10 @@ def load_labels(label_dir: Path = PILOT_LABELS_DIR, strict: bool = True) -> tupl
             continue
         problems += [f"{path.name}: {p}" for p in _validate(doc, path)]
         nid = doc.get("note_id")
-        fold = folds.get(nid) if len(folds) else None
+        if label_dir == FRESH_LABELS_DIR:
+            fold = "fresh"
+        else:
+            fold = folds.get(nid) if len(folds) else None
         facts = doc.get("key_facts") or []
         for f in facts:
             fact_rows.append({"note_id": nid, "fold": fold, **f})
